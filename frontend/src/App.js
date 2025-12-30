@@ -4,18 +4,28 @@ import axios from "axios";
 import { Toaster, toast } from "sonner";
 import { 
   Brain, Sparkles, Shield, Heart, Send, Plus, Trash2, 
-  Settings, Terminal, Cpu, Database, Zap, ChevronDown,
-  MessageSquare, Bot, User, Menu, X
+  Terminal, Cpu, Database, Zap, ChevronDown,
+  MessageSquare, Bot, User, Menu, X, Layers, Activity,
+  Lock, Unlock, Code, Settings2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
   DropdownMenuSeparator,
+  DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -29,18 +39,38 @@ const PERSONA_ICONS = {
   Bot: Bot,
 };
 
+// Tier badge colors
+const TIER_COLORS = {
+  free: "bg-muted text-muted-foreground",
+  pro: "bg-secondary/20 text-secondary border-secondary/50",
+  dev: "bg-primary/20 text-primary border-primary/50",
+  god: "bg-gradient-to-r from-primary/20 to-secondary/20 text-white border-primary/50",
+};
+
 // Status indicator component
-const StatusIndicator = ({ status, label }) => (
+const StatusIndicator = ({ enabled, label }) => (
   <div className="flex items-center gap-2">
     <div className={`w-2 h-2 rounded-full ${
-      status ? 'bg-accent animate-pulse' : 'bg-destructive'
+      enabled ? 'bg-accent animate-pulse' : 'bg-muted-foreground/30'
     }`} />
     <span className="text-xs text-muted-foreground uppercase tracking-wider">{label}</span>
   </div>
 );
 
+// Trinity Model Status
+const TrinityModelBadge = ({ model, enabled }) => (
+  <div className={`flex items-center gap-2 px-3 py-1.5 border ${
+    enabled ? 'border-accent/50 bg-accent/10' : 'border-border bg-muted/20'
+  }`}>
+    <div className={`w-1.5 h-1.5 rounded-full ${enabled ? 'bg-accent' : 'bg-muted-foreground/30'}`} />
+    <span className={`text-xs font-bold uppercase tracking-wider ${enabled ? 'text-accent' : 'text-muted-foreground'}`}>
+      {model}
+    </span>
+  </div>
+);
+
 // Message bubble component
-const MessageBubble = ({ message, persona }) => {
+const MessageBubble = ({ message, persona, fusionMode, modelsUsed }) => {
   const isUser = message.role === "user";
   const PersonaIcon = persona ? PERSONA_ICONS[persona.icon] || Bot : Bot;
   
@@ -61,12 +91,17 @@ const MessageBubble = ({ message, persona }) => {
         )}
       </div>
       <div className={`flex-1 ${isUser ? 'text-right' : ''}`}>
-        <div className="flex items-center gap-2 mb-1">
+        <div className={`flex items-center gap-2 mb-1 ${isUser ? 'justify-end' : ''}`}>
           <span className={`text-xs uppercase tracking-wider ${
-            isUser ? 'text-secondary ml-auto' : 'text-primary'
+            isUser ? 'text-secondary' : 'text-primary'
           }`}>
             {isUser ? 'USER' : persona?.name || 'GODMIND'}
           </span>
+          {!isUser && fusionMode && (
+            <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-primary/30 text-primary/70">
+              {fusionMode}
+            </Badge>
+          )}
           <span className="text-xs text-muted-foreground">
             {new Date(message.timestamp).toLocaleTimeString()}
           </span>
@@ -78,13 +113,22 @@ const MessageBubble = ({ message, persona }) => {
         }`}>
           <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
         </div>
+        {!isUser && modelsUsed && modelsUsed.length > 0 && modelsUsed[0] !== 'fallback' && (
+          <div className="flex gap-2 mt-2">
+            {modelsUsed.map((model) => (
+              <span key={model} className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                {model}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
 };
 
 // Sidebar component
-const Sidebar = ({ sessions, currentSession, onSelectSession, onNewSession, onDeleteSession, isOpen, onClose }) => (
+const Sidebar = ({ sessions, currentSession, onSelectSession, onNewSession, onDeleteSession, isOpen, onClose, trinityStatus }) => (
   <div className={`
     fixed md:relative inset-y-0 left-0 z-50
     w-72 border-r border-border bg-card/90 backdrop-blur-xl
@@ -97,11 +141,11 @@ const Sidebar = ({ sessions, currentSession, onSelectSession, onNewSession, onDe
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-primary/20 border border-primary/50 flex items-center justify-center neon-glow">
-              <Terminal className="w-5 h-5 text-primary" />
+              <Layers className="w-5 h-5 text-primary" />
             </div>
             <div>
               <h1 className="font-heading text-lg font-bold text-primary neon-text">GODBOT</h1>
-              <p className="text-xs text-muted-foreground">v1.0 ALPHA</p>
+              <p className="text-xs text-muted-foreground">EchelonCore v1.0</p>
             </div>
           </div>
           <button 
@@ -111,6 +155,28 @@ const Sidebar = ({ sessions, currentSession, onSelectSession, onNewSession, onDe
           >
             <X className="w-5 h-5" />
           </button>
+        </div>
+      </div>
+      
+      {/* Trinity Status Panel */}
+      <div className="p-4 border-b border-border">
+        <div className="flex items-center gap-2 mb-3">
+          <Activity className="w-4 h-4 text-primary" />
+          <span className="text-xs font-bold uppercase tracking-wider text-primary">Trinity Fusion</span>
+        </div>
+        <div className="space-y-2">
+          <TrinityModelBadge model="Command R+" enabled={trinityStatus?.command_r?.enabled} />
+          <TrinityModelBadge model="DeepSeek" enabled={trinityStatus?.deepseek?.enabled} />
+          <TrinityModelBadge model="MythoMax" enabled={trinityStatus?.mythomax?.enabled} />
+        </div>
+        <div className={`mt-3 p-2 border text-center ${
+          trinityStatus?.fusion_ready ? 'border-accent/50 bg-accent/10' : 'border-muted bg-muted/20'
+        }`}>
+          <span className={`text-xs font-bold uppercase tracking-wider ${
+            trinityStatus?.fusion_ready ? 'text-accent' : 'text-muted-foreground'
+          }`}>
+            {trinityStatus?.fusion_ready ? 'FUSION READY' : 'DEMO MODE'}
+          </span>
         </div>
       </div>
       
@@ -174,9 +240,11 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [personas, setPersonas] = useState([]);
   const [selectedPersona, setSelectedPersona] = useState(null);
+  const [selectedTier, setSelectedTier] = useState("dev");
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [systemStatus, setSystemStatus] = useState(null);
+  const [trinityStatus, setTrinityStatus] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -186,7 +254,11 @@ function App() {
     fetchPersonas();
     fetchSessions();
     fetchStatus();
-    const statusInterval = setInterval(fetchStatus, 30000);
+    fetchTrinityStatus();
+    const statusInterval = setInterval(() => {
+      fetchStatus();
+      fetchTrinityStatus();
+    }, 30000);
     return () => clearInterval(statusInterval);
   }, []);
 
@@ -205,12 +277,21 @@ function App() {
     }
   };
 
+  // Fetch Trinity status
+  const fetchTrinityStatus = async () => {
+    try {
+      const response = await axios.get(`${API}/trinity`);
+      setTrinityStatus(response.data);
+    } catch (error) {
+      console.error("Failed to fetch trinity status:", error);
+    }
+  };
+
   // Fetch personas
   const fetchPersonas = async () => {
     try {
       const response = await axios.get(`${API}/personas`);
       setPersonas(response.data);
-      // Set default persona
       const godmind = response.data.find(p => p.id === "godmind-default");
       setSelectedPersona(godmind || response.data[0]);
     } catch (error) {
@@ -288,6 +369,7 @@ function App() {
         message: input,
         session_id: currentSession?.id,
         persona_id: selectedPersona?.id,
+        tier: selectedTier,
       });
 
       const assistantMessage = {
@@ -296,18 +378,18 @@ function App() {
         content: response.data.content,
         persona_id: response.data.persona_id,
         timestamp: response.data.timestamp,
+        fusion_mode: response.data.fusion_mode,
+        models_used: response.data.models_used,
       };
 
       setMessages(prev => [...prev, assistantMessage]);
 
-      // Update session if new
       if (!currentSession) {
         setCurrentSession({ id: response.data.session_id, name: "New Session", message_count: 2 });
         fetchSessions();
       }
     } catch (error) {
       toast.error(error.response?.data?.detail || "Failed to send message");
-      // Remove optimistic user message on error
       setMessages(prev => prev.filter(m => m.id !== userMessage.id));
     } finally {
       setIsLoading(false);
@@ -347,6 +429,7 @@ function App() {
         onDeleteSession={handleDeleteSession}
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
+        trinityStatus={trinityStatus}
       />
 
       {/* Main Content */}
@@ -371,13 +454,17 @@ function App() {
                   data-testid="persona-selector"
                 >
                   <PersonaIcon className="w-4 h-4 text-primary" />
-                  <span className="text-sm font-bold uppercase tracking-wider">
+                  <span className="text-sm font-bold uppercase tracking-wider hidden sm:inline">
                     {selectedPersona?.name || "SELECT PERSONA"}
                   </span>
                   <ChevronDown className="w-4 h-4 text-muted-foreground" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent className="w-64 bg-card border-border">
+                <DropdownMenuLabel className="text-xs text-muted-foreground uppercase tracking-wider">
+                  Select Persona
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
                 {personas.map((persona) => {
                   const Icon = PERSONA_ICONS[persona.icon] || Bot;
                   return (
@@ -392,24 +479,59 @@ function App() {
                       <Icon className="w-4 h-4 mr-2 text-primary" />
                       <div className="flex-1">
                         <p className="font-bold text-sm">{persona.name}</p>
-                        <p className="text-xs text-muted-foreground">{persona.description}</p>
+                        <p className="text-xs text-muted-foreground line-clamp-1">{persona.description}</p>
                       </div>
                     </DropdownMenuItem>
                   );
                 })}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="cursor-pointer" data-testid="create-persona-btn">
-                  <Plus className="w-4 h-4 mr-2" />
-                  Create Custom Persona
-                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+
+            {/* Tier Selector */}
+            <Select value={selectedTier} onValueChange={setSelectedTier}>
+              <SelectTrigger 
+                className={`w-32 rounded-none border-primary/30 bg-transparent ${TIER_COLORS[selectedTier]}`}
+                data-testid="tier-selector"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-card border-border">
+                <SelectItem value="free" className="cursor-pointer">
+                  <div className="flex items-center gap-2">
+                    <Lock className="w-3 h-3" />
+                    <span>Free</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="pro" className="cursor-pointer">
+                  <div className="flex items-center gap-2">
+                    <Unlock className="w-3 h-3" />
+                    <span>Pro</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="dev" className="cursor-pointer">
+                  <div className="flex items-center gap-2">
+                    <Code className="w-3 h-3" />
+                    <span>Dev+</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="god" className="cursor-pointer">
+                  <div className="flex items-center gap-2">
+                    <Zap className="w-3 h-3" />
+                    <span>God Mode</span>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           {/* Status Indicators */}
           <div className="hidden md:flex items-center gap-6">
-            <StatusIndicator status={systemStatus?.llm_connected} label="LLM" />
-            <StatusIndicator status={systemStatus?.db_connected} label="DB" />
+            <Badge variant="outline" className={`text-xs ${
+              systemStatus?.fusion_mode === 'Demo Mode' ? 'border-muted text-muted-foreground' : 'border-accent text-accent'
+            }`}>
+              {systemStatus?.fusion_mode || 'Loading...'}
+            </Badge>
+            <StatusIndicator enabled={systemStatus?.db_connected} label="DB" />
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Cpu className="w-3 h-3" />
               <span>{systemStatus?.total_messages || 0} msgs</span>
@@ -422,14 +544,18 @@ function App() {
           {messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center px-4">
               <div className="w-24 h-24 mb-8 border border-primary/50 bg-primary/10 flex items-center justify-center neon-glow">
-                <Brain className="w-12 h-12 text-primary" />
+                <Layers className="w-12 h-12 text-primary" />
               </div>
               <h2 className="font-heading text-2xl md:text-3xl font-bold mb-4 text-primary neon-text">
-                GODBOT COMMAND CORE
+                ECHELON CORE
               </h2>
-              <p className="text-muted-foreground max-w-md mb-8 text-sm md:text-base">
-                Initialize communication with the modular AI agent framework. 
-                Select a persona and begin your interaction.
+              <p className="text-muted-foreground max-w-md mb-4 text-sm md:text-base">
+                Trinity Fusion AI Framework - Multi-model synthesis for superior intelligence.
+              </p>
+              <p className="text-xs text-muted-foreground mb-8">
+                {trinityStatus?.fusion_ready 
+                  ? 'All systems operational. Trinity Fusion ready.'
+                  : 'Running in demo mode. Configure API keys for full Trinity capabilities.'}
               </p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {personas.slice(0, 4).map((persona) => {
@@ -459,6 +585,8 @@ function App() {
                   key={message.id} 
                   message={message} 
                   persona={personas.find(p => p.id === message.persona_id) || selectedPersona}
+                  fusionMode={message.fusion_mode}
+                  modelsUsed={message.models_used}
                 />
               ))}
               {isLoading && (
@@ -471,6 +599,9 @@ function App() {
                       <span className="text-xs uppercase tracking-wider text-primary">
                         {selectedPersona?.name || 'GODMIND'}
                       </span>
+                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-primary/30 text-primary/70 animate-pulse">
+                        Processing...
+                      </Badge>
                     </div>
                     <div className="p-4 glass border-primary/30">
                       <div className="flex gap-1">
@@ -517,7 +648,7 @@ function App() {
             <div className="flex items-center justify-between mt-3 text-xs text-muted-foreground">
               <span className="flex items-center gap-2">
                 <Zap className="w-3 h-3 text-accent" />
-                Powered by Gemini 3 Flash
+                Trinity Fusion: Command R+ | DeepSeek | MythoMax
               </span>
               <span>Press Enter to send</span>
             </div>
