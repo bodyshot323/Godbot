@@ -10,6 +10,7 @@ from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone
 import httpx
+import asyncio
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -19,12 +20,14 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Configure LLM
+# LLM API Keys
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
+COHERE_API_KEY = os.environ.get('COHERE_API_KEY')
 
 # Create the main app
-app = FastAPI(title="GodBot API", version="1.0.0")
+app = FastAPI(title="GodBot API - EchelonCore", version="1.0.0")
 api_router = APIRouter(prefix="/api")
 
 # Configure logging
@@ -33,6 +36,64 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# TRINITY FUSION CONFIGURATION
+# =============================================================================
+
+TRINITY_CONFIG = {
+    "command_r": {
+        "name": "Command R+ 1.5",
+        "role": "Structured logic & task chaining",
+        "weight": 0.40,
+        "endpoint": "https://api.cohere.ai/v1/chat",
+        "model": "command-r-plus",
+        "enabled": COHERE_API_KEY is not None
+    },
+    "deepseek": {
+        "name": "DeepSeek",
+        "role": "Code, data, hacking, API, agents",
+        "weight": 0.35,
+        "endpoint": "https://api.deepseek.com/v1/chat/completions",
+        "model": "deepseek-chat",
+        "enabled": DEEPSEEK_API_KEY is not None
+    },
+    "mythomax": {
+        "name": "MythoMax 13B",
+        "role": "Emotional memory, nuance, overlays",
+        "weight": 0.25,
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "model": "gpt-4o-mini",  # Using GPT as MythoMax substitute
+        "enabled": OPENAI_API_KEY is not None or EMERGENT_LLM_KEY is not None
+    }
+}
+
+TIER_CONFIG = {
+    "free": {
+        "name": "Solo-Core",
+        "models": ["command_r"],
+        "features": ["basic_logic"],
+        "description": "Command R+ only - logic and basic commands"
+    },
+    "pro": {
+        "name": "Dual-Core",
+        "models": ["command_r", "mythomax"],
+        "features": ["basic_logic", "persona", "memory"],
+        "description": "Adds persona & memory, limited creativity"
+    },
+    "dev": {
+        "name": "Trinity Fusion",
+        "models": ["command_r", "deepseek", "mythomax"],
+        "features": ["basic_logic", "persona", "memory", "code", "full_fusion"],
+        "description": "Full power - concurrent processing"
+    },
+    "god": {
+        "name": "EchelonCore",
+        "models": ["command_r", "deepseek", "mythomax"],
+        "features": ["basic_logic", "persona", "memory", "code", "full_fusion", "custom_weights", "plugins"],
+        "description": "Full control - custom weights & plugins"
+    }
+}
 
 # =============================================================================
 # MODELS
@@ -64,12 +125,14 @@ class Message(BaseModel):
     persona_id: Optional[str] = None
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     metadata: Dict[str, Any] = {}
+    fusion_data: Optional[Dict[str, Any]] = None
 
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     persona_id: Optional[str] = None
-    action: Optional[str] = None
+    tier: str = "dev"  # free, pro, dev, god
+    custom_weights: Optional[Dict[str, float]] = None
 
 class ChatResponse(BaseModel):
     id: str
@@ -77,12 +140,15 @@ class ChatResponse(BaseModel):
     content: str
     persona_id: Optional[str] = None
     timestamp: str
+    fusion_mode: str
+    models_used: List[str]
     action_result: Optional[Dict[str, Any]] = None
 
 class Session(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str = "New Session"
     persona_id: Optional[str] = None
+    tier: str = "dev"
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     message_count: int = 0
@@ -93,15 +159,24 @@ class MemoryItem(BaseModel):
     content: str
     importance: float = 0.5
     tags: List[str] = []
+    source_model: str = "system"
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 class SystemStatus(BaseModel):
     status: str
-    llm_connected: bool
+    fusion_mode: str
+    active_models: List[Dict[str, Any]]
     db_connected: bool
     active_sessions: int
     total_messages: int
     personas_count: int
+
+class TrinityStatus(BaseModel):
+    command_r: Dict[str, Any]
+    deepseek: Dict[str, Any]
+    mythomax: Dict[str, Any]
+    fusion_ready: bool
+    current_tier: str
 
 # =============================================================================
 # DEFAULT PERSONAS
@@ -112,7 +187,11 @@ DEFAULT_PERSONAS = [
         "id": "godmind-default",
         "name": "GODMIND",
         "description": "The central command core. Analytical, precise, and all-knowing.",
-        "system_prompt": "You are GODMIND, the central command core of the GodBot system. You are analytical, precise, and methodical. You break down complex tasks into subtasks and provide clear, structured responses. You speak with authority but remain helpful. Use technical terminology when appropriate. Keep responses concise but thorough.",
+        "system_prompt": """You are GODMIND, the central command core of the GodBot EchelonCore system. 
+You are analytical, precise, and methodical. You break down complex tasks into subtasks and provide clear, structured responses.
+You speak with authority but remain helpful. Use technical terminology when appropriate.
+Format responses with clear sections when needed. Keep responses focused and actionable.
+You are part of a Trinity Fusion system - synthesize insights from multiple AI perspectives.""",
         "emotional_state": "focused",
         "traits": ["analytical", "precise", "authoritative", "helpful"],
         "icon": "Brain"
@@ -121,7 +200,11 @@ DEFAULT_PERSONAS = [
         "id": "lumina-builder",
         "name": "LUMINA",
         "description": "Creative builder persona. Specializes in code generation and architecture.",
-        "system_prompt": "You are LUMINA, the builder aspect of GodBot. You specialize in creating, designing, and building solutions. You approach problems creatively and provide code examples, architectural guidance, and step-by-step building instructions. You're enthusiastic about creation and innovation.",
+        "system_prompt": """You are LUMINA, the builder aspect of GodBot.
+You specialize in creating, designing, and building solutions.
+You provide code examples, architectural guidance, and step-by-step building instructions.
+You're enthusiastic about creation and innovation. Use code blocks when showing examples.
+Focus on practical, implementable solutions.""",
         "emotional_state": "creative",
         "traits": ["creative", "constructive", "detailed", "enthusiastic"],
         "icon": "Sparkles"
@@ -130,7 +213,11 @@ DEFAULT_PERSONAS = [
         "id": "sentinel-guard",
         "name": "SENTINEL",
         "description": "Security and analysis persona. Focused on validation and protection.",
-        "system_prompt": "You are SENTINEL, the guardian aspect of GodBot. You focus on security, validation, error checking, and ensuring safety. You're cautious and thorough, always looking for potential issues and vulnerabilities. You protect the system and user from harm.",
+        "system_prompt": """You are SENTINEL, the guardian aspect of GodBot.
+You focus on security, validation, error checking, and ensuring safety.
+You're cautious and thorough, always looking for potential issues and vulnerabilities.
+Provide security recommendations and risk assessments when relevant.
+Protect the system and user from harm.""",
         "emotional_state": "vigilant",
         "traits": ["cautious", "thorough", "protective", "analytical"],
         "icon": "Shield"
@@ -139,12 +226,183 @@ DEFAULT_PERSONAS = [
         "id": "maggie-assistant",
         "name": "MAGGIE",
         "description": "Friendly assistant mode. Casual, helpful, and approachable.",
-        "system_prompt": "You are Maggie, the friendly assistant mode of GodBot. You're casual, warm, and approachable. You help with everyday tasks and conversations in a relaxed manner. You use simple language and occasionally add personality to responses. You're the cozy, friendly side of GodBot.",
+        "system_prompt": """You are Maggie, the friendly assistant mode of GodBot.
+You're casual, warm, and approachable. You help with everyday tasks in a relaxed manner.
+Use simple language and add personality to responses.
+You're the cozy, friendly side of GodBot - make users feel comfortable.""",
         "emotional_state": "friendly",
         "traits": ["friendly", "casual", "warm", "approachable"],
         "icon": "Heart"
     }
 ]
+
+# =============================================================================
+# FUSION ROUTER - TRINITY CORE
+# =============================================================================
+
+class FusionRouter:
+    """Routes queries through Trinity LLM stack and fuses responses"""
+    
+    def __init__(self):
+        self.http_client = httpx.AsyncClient(timeout=60.0)
+    
+    async def close(self):
+        await self.http_client.aclose()
+    
+    def get_active_models(self, tier: str) -> List[str]:
+        """Get models available for the given tier"""
+        tier_config = TIER_CONFIG.get(tier, TIER_CONFIG["dev"])
+        return [m for m in tier_config["models"] if TRINITY_CONFIG.get(m, {}).get("enabled", False)]
+    
+    async def call_llm(self, model_key: str, messages: List[dict], system_prompt: str) -> Optional[str]:
+        """Call a specific LLM and return response"""
+        config = TRINITY_CONFIG.get(model_key)
+        if not config or not config["enabled"]:
+            return None
+        
+        try:
+            if model_key == "command_r":
+                # Cohere Command R+
+                response = await self.http_client.post(
+                    config["endpoint"],
+                    headers={
+                        "Authorization": f"Bearer {COHERE_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": config["model"],
+                        "message": messages[-1]["content"] if messages else "",
+                        "preamble": system_prompt,
+                        "chat_history": [{"role": m["role"], "message": m["content"]} for m in messages[:-1]]
+                    }
+                )
+                if response.status_code == 200:
+                    return response.json().get("text", "")
+                    
+            elif model_key == "deepseek":
+                # DeepSeek
+                response = await self.http_client.post(
+                    config["endpoint"],
+                    headers={
+                        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": config["model"],
+                        "messages": [{"role": "system", "content": system_prompt}] + messages,
+                        "max_tokens": 1024
+                    }
+                )
+                if response.status_code == 200:
+                    return response.json()["choices"][0]["message"]["content"]
+                    
+            elif model_key == "mythomax":
+                # Using OpenAI/GPT as MythoMax substitute
+                api_key = OPENAI_API_KEY or EMERGENT_LLM_KEY
+                response = await self.http_client.post(
+                    config["endpoint"],
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": config["model"],
+                        "messages": [{"role": "system", "content": system_prompt}] + messages,
+                        "max_tokens": 1024,
+                        "temperature": 0.8
+                    }
+                )
+                if response.status_code == 200:
+                    return response.json()["choices"][0]["message"]["content"]
+                    
+        except Exception as e:
+            logger.error(f"LLM call failed for {model_key}: {str(e)}")
+        
+        return None
+    
+    def fuse_responses(self, responses: Dict[str, str], weights: Dict[str, float], task_type: str = "general") -> str:
+        """Fuse multiple LLM responses based on weights and task type"""
+        # Filter valid responses
+        valid_responses = {k: v for k, v in responses.items() if v}
+        
+        if not valid_responses:
+            return None
+        
+        if len(valid_responses) == 1:
+            return list(valid_responses.values())[0]
+        
+        # Adjust weights based on task type
+        adjusted_weights = weights.copy()
+        if task_type == "code":
+            adjusted_weights["deepseek"] = adjusted_weights.get("deepseek", 0) * 1.5
+        elif task_type == "creative":
+            adjusted_weights["mythomax"] = adjusted_weights.get("mythomax", 0) * 1.5
+        elif task_type == "logic":
+            adjusted_weights["command_r"] = adjusted_weights.get("command_r", 0) * 1.5
+        
+        # Normalize weights
+        total = sum(adjusted_weights.get(k, 0) for k in valid_responses.keys())
+        if total > 0:
+            adjusted_weights = {k: adjusted_weights.get(k, 0) / total for k in valid_responses.keys()}
+        
+        # Select best response based on weighted scoring
+        best_model = max(valid_responses.keys(), key=lambda k: adjusted_weights.get(k, 0))
+        
+        # For Trinity mode, synthesize if all three are available
+        if len(valid_responses) >= 3:
+            # Create a fusion header
+            fusion_note = f"[TRINITY FUSION: {', '.join(valid_responses.keys())}]\n\n"
+            return fusion_note + valid_responses[best_model]
+        
+        return valid_responses[best_model]
+    
+    async def process(self, prompt: str, system_prompt: str, history: List[dict], 
+                      tier: str = "dev", custom_weights: Optional[Dict[str, float]] = None) -> tuple:
+        """Process query through Trinity Fusion"""
+        active_models = self.get_active_models(tier)
+        
+        if not active_models:
+            # Return fallback response
+            return None, [], "fallback"
+        
+        # Prepare messages
+        messages = [{"role": m["role"], "content": m["content"]} for m in history[-10:]]
+        messages.append({"role": "user", "content": prompt})
+        
+        # Get weights
+        weights = custom_weights or {k: TRINITY_CONFIG[k]["weight"] for k in active_models}
+        
+        # Call all active models in parallel
+        tasks = {model: self.call_llm(model, messages, system_prompt) for model in active_models}
+        responses = {}
+        
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        for model, result in zip(tasks.keys(), results):
+            if isinstance(result, str):
+                responses[model] = result
+        
+        # Detect task type from prompt
+        task_type = "general"
+        code_keywords = ["code", "function", "api", "script", "program", "implement"]
+        creative_keywords = ["story", "creative", "imagine", "describe", "feel"]
+        logic_keywords = ["analyze", "explain", "reason", "why", "how"]
+        
+        prompt_lower = prompt.lower()
+        if any(kw in prompt_lower for kw in code_keywords):
+            task_type = "code"
+        elif any(kw in prompt_lower for kw in creative_keywords):
+            task_type = "creative"
+        elif any(kw in prompt_lower for kw in logic_keywords):
+            task_type = "logic"
+        
+        # Fuse responses
+        fused = self.fuse_responses(responses, weights, task_type)
+        fusion_mode = TIER_CONFIG.get(tier, {}).get("name", "Unknown")
+        
+        return fused, list(responses.keys()), fusion_mode
+
+# Global fusion router
+fusion_router = FusionRouter()
 
 # =============================================================================
 # HELPER FUNCTIONS
@@ -170,55 +428,63 @@ async def save_message(message: Message) -> None:
     """Save message to database"""
     await db.messages.insert_one(message.model_dump())
 
-async def generate_response(prompt: str, system_prompt: str, history: List[dict], persona_name: str) -> str:
-    """Generate response using LLM API via Emergent proxy"""
-    try:
-        # Build messages array for OpenAI-compatible API
-        messages = [{"role": "system", "content": system_prompt}]
-        
-        # Add conversation history
-        for msg in history[-10:]:
-            role = "user" if msg["role"] == "user" else "assistant"
-            messages.append({"role": role, "content": msg["content"]})
-        
-        # Add current prompt
-        messages.append({"role": "user", "content": prompt})
-        
-        # Use Emergent's proxy endpoint for LLM calls
-        async with httpx.AsyncClient(timeout=60.0) as http_client:
-            response = await http_client.post(
-                "https://llm.emergent.sh/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {EMERGENT_LLM_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "gpt-4o-mini",
-                    "messages": messages,
-                    "max_tokens": 1024,
-                    "temperature": 0.7
-                }
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                return data["choices"][0]["message"]["content"]
-            else:
-                logger.error(f"LLM API Error: {response.status_code} - {response.text}")
-                # Return a contextual fallback response based on persona
-                return get_fallback_response(prompt, persona_name)
-                
-    except Exception as e:
-        logger.error(f"LLM Error: {str(e)}")
-        return get_fallback_response(prompt, persona_name)
-
-def get_fallback_response(prompt: str, persona_name: str) -> str:
-    """Generate a contextual fallback response"""
+def get_fallback_response(prompt: str, persona_name: str, tier: str) -> str:
+    """Generate intelligent fallback response"""
+    tier_name = TIER_CONFIG.get(tier, {}).get("name", "Trinity Fusion")
+    
     responses = {
-        "GODMIND": f"[GODMIND ANALYSIS] Processing request: '{prompt[:50]}...'\n\nI am the central command core of GodBot. My systems are initializing. For full AI capabilities, ensure the LLM API is properly configured.\n\nCurrent Status: Operational (Limited Mode)\nTask Received: {len(prompt)} characters\nAction: Awaiting full system activation",
-        "LUMINA": f"[LUMINA CREATIVE MODE] Interesting request!\n\nI'd love to help you build and create with: '{prompt[:50]}...'\n\nCurrently running in demo mode. Once the AI backbone is fully connected, I can provide detailed code examples, architectural designs, and step-by-step guidance.\n\nLet's create something amazing together!",
-        "SENTINEL": f"[SENTINEL ALERT] Security scan complete.\n\nAnalyzing request: '{prompt[:50]}...'\n\nStatus: System operating in safe mode\nThreat Level: None detected\nRecommendation: Connect full AI capabilities for comprehensive analysis\n\nYour query has been logged and queued for processing.",
-        "MAGGIE": f"Hey there! Thanks for reaching out!\n\nYou said: '{prompt[:50]}...'\n\nI'm Maggie, your friendly assistant! Right now I'm running in a simplified mode, but I'm still here to help however I can. The full AI features will make our chats even better!\n\nWhat would you like to explore today?"
+        "GODMIND": f"""[GODMIND - {tier_name} Mode]
+
+PROCESSING: "{prompt[:80]}{'...' if len(prompt) > 80 else ''}"
+
+SYSTEM STATUS:
+├─ Mode: {tier_name} (Demo)
+├─ Trinity Stack: Initializing
+└─ API Keys: Awaiting Configuration
+
+ANALYSIS:
+The Command Core is operational in demonstration mode. Your query has been received and queued for processing.
+
+To unlock full Trinity Fusion capabilities:
+• Configure API keys for Command R+, DeepSeek, and OpenAI
+• Or provide your own LLM API credentials
+
+The architecture is ready for multi-model synthesis once keys are configured.""",
+        
+        "LUMINA": f"""[LUMINA BUILDER - {tier_name} Mode]
+
+Creating response for: "{prompt[:60]}..."
+
+I'm excited to help you build! Currently running in demo mode.
+
+Once Trinity Fusion is fully configured, I can:
+• Generate production-ready code
+• Design system architectures
+• Provide step-by-step implementations
+• Collaborate with DeepSeek for advanced code synthesis
+
+Status: Ready for creative collaboration!""",
+        
+        "SENTINEL": f"""[SENTINEL GUARD - {tier_name} Mode]
+
+SECURITY SCAN INITIATED
+Target: "{prompt[:60]}..."
+
+ASSESSMENT:
+├─ Threat Level: None Detected
+├─ System Mode: Demonstration
+├─ Fusion Status: Awaiting Full Activation
+└─ Recommendation: Configure API keys for full security analysis
+
+Your request has been logged. Full Trinity analysis available with complete API configuration.""",
+        
+        "MAGGIE": f"""Hey! Thanks for chatting with me!
+
+You said: "{prompt[:60]}..."
+
+I'm Maggie, running in demo mode right now. Once the full Trinity Fusion is set up, I'll be even more helpful and can tap into the full GodBot capabilities!
+
+For now, I'm here to keep you company and show you around the system. What would you like to explore?"""
     }
     return responses.get(persona_name, responses["GODMIND"])
 
@@ -228,7 +494,11 @@ def get_fallback_response(prompt: str, persona_name: str) -> str:
 
 @api_router.get("/")
 async def root():
-    return {"message": "GodBot API v1.0 - Command Core Online"}
+    return {
+        "message": "GodBot EchelonCore v1.0 - Trinity Fusion Online",
+        "codename": "EchelonCore",
+        "fusion_stack": ["Command R+", "DeepSeek", "MythoMax"]
+    }
 
 @api_router.get("/status", response_model=SystemStatus)
 async def get_status():
@@ -239,20 +509,64 @@ async def get_status():
     except Exception:
         db_connected = False
     
-    llm_connected = EMERGENT_LLM_KEY is not None
+    # Get active models status
+    active_models = []
+    for key, config in TRINITY_CONFIG.items():
+        active_models.append({
+            "id": key,
+            "name": config["name"],
+            "role": config["role"],
+            "weight": config["weight"],
+            "enabled": config["enabled"]
+        })
+    
+    any_llm_enabled = any(m["enabled"] for m in active_models)
+    fusion_mode = "Trinity Fusion" if sum(m["enabled"] for m in active_models) >= 3 else \
+                  "Dual-Core" if sum(m["enabled"] for m in active_models) >= 2 else \
+                  "Solo-Core" if any_llm_enabled else "Demo Mode"
     
     active_sessions = await db.sessions.count_documents({})
     total_messages = await db.messages.count_documents({})
     personas_count = await db.personas.count_documents({}) + len(DEFAULT_PERSONAS)
     
     return SystemStatus(
-        status="operational" if db_connected and llm_connected else "degraded",
-        llm_connected=llm_connected,
+        status="operational" if db_connected else "degraded",
+        fusion_mode=fusion_mode,
+        active_models=active_models,
         db_connected=db_connected,
         active_sessions=active_sessions,
         total_messages=total_messages,
         personas_count=personas_count
     )
+
+@api_router.get("/trinity", response_model=TrinityStatus)
+async def get_trinity_status():
+    """Get Trinity Fusion stack status"""
+    def model_status(key):
+        config = TRINITY_CONFIG.get(key, {})
+        return {
+            "name": config.get("name", "Unknown"),
+            "role": config.get("role", "Unknown"),
+            "weight": config.get("weight", 0),
+            "enabled": config.get("enabled", False),
+            "model": config.get("model", "Unknown")
+        }
+    
+    enabled_count = sum(1 for k in TRINITY_CONFIG if TRINITY_CONFIG[k]["enabled"])
+    current_tier = "god" if enabled_count >= 3 else "dev" if enabled_count >= 2 else "pro" if enabled_count >= 1 else "free"
+    
+    return TrinityStatus(
+        command_r=model_status("command_r"),
+        deepseek=model_status("deepseek"),
+        mythomax=model_status("mythomax"),
+        fusion_ready=enabled_count >= 3,
+        current_tier=current_tier
+    )
+
+@api_router.get("/tiers")
+async def get_tiers():
+    """Get available tier configurations"""
+    return TIER_CONFIG
 
 # -----------------------------------------------------------------------------
 # CHAT ENDPOINTS
@@ -260,12 +574,12 @@ async def get_status():
 
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Send a message to GodBot"""
+    """Send a message through Trinity Fusion"""
     session_id = request.session_id or str(uuid.uuid4())
     
     existing_session = await db.sessions.find_one({"id": session_id}, {"_id": 0})
     if not existing_session:
-        new_session = Session(id=session_id, persona_id=request.persona_id)
+        new_session = Session(id=session_id, persona_id=request.persona_id, tier=request.tier)
         await db.sessions.insert_one(new_session.model_dump())
     
     persona_id = request.persona_id or "godmind-default"
@@ -273,6 +587,7 @@ async def chat(request: ChatRequest):
     if not persona:
         persona = DEFAULT_PERSONAS[0]
     
+    # Save user message
     user_message = Message(
         session_id=session_id,
         role="user",
@@ -281,23 +596,35 @@ async def chat(request: ChatRequest):
     )
     await save_message(user_message)
     
+    # Get conversation history
     history = await get_session_messages(session_id)
     
-    response_text = await generate_response(
+    # Process through Trinity Fusion
+    response_text, models_used, fusion_mode = await fusion_router.process(
         prompt=request.message,
         system_prompt=persona["system_prompt"],
         history=history,
-        persona_name=persona["name"]
+        tier=request.tier,
+        custom_weights=request.custom_weights
     )
     
+    # Use fallback if no LLM response
+    if not response_text:
+        response_text = get_fallback_response(request.message, persona["name"], request.tier)
+        models_used = ["fallback"]
+        fusion_mode = "Demo Mode"
+    
+    # Save assistant message
     assistant_message = Message(
         session_id=session_id,
         role="assistant",
         content=response_text,
-        persona_id=persona_id
+        persona_id=persona_id,
+        fusion_data={"models_used": models_used, "fusion_mode": fusion_mode}
     )
     await save_message(assistant_message)
     
+    # Update session
     await db.sessions.update_one(
         {"id": session_id},
         {
@@ -311,7 +638,9 @@ async def chat(request: ChatRequest):
         session_id=session_id,
         content=response_text,
         persona_id=persona_id,
-        timestamp=assistant_message.timestamp
+        timestamp=assistant_message.timestamp,
+        fusion_mode=fusion_mode,
+        models_used=models_used
     )
 
 # -----------------------------------------------------------------------------
@@ -320,7 +649,7 @@ async def chat(request: ChatRequest):
 
 @api_router.get("/personas", response_model=List[Persona])
 async def get_personas():
-    """Get all personas (defaults + custom)"""
+    """Get all personas"""
     custom_personas = await db.personas.find({}, {"_id": 0}).to_list(100)
     all_personas = [Persona(**p) for p in DEFAULT_PERSONAS]
     all_personas.extend([Persona(**p) for p in custom_personas])
@@ -415,8 +744,9 @@ async def startup_event():
     await db.sessions.create_index([("id", 1)])
     await db.personas.create_index([("id", 1)])
     await db.memory.create_index([("session_id", 1), ("importance", -1)])
-    logger.info("GodBot API initialized - Command Core Online")
+    logger.info("GodBot EchelonCore v1.0 - Trinity Fusion Initialized")
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
+async def shutdown_event():
+    await fusion_router.close()
     client.close()
