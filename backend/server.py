@@ -178,6 +178,38 @@ class TrinityStatus(BaseModel):
     fusion_ready: bool
     current_tier: str
 
+class UsageStats(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str = "demo_user"
+    tier: str = "dev"
+    credits_total: int = 10000
+    credits_used: int = 0
+    credits_remaining: int = 10000
+    model_usage: Dict[str, int] = {}
+    requests_today: int = 0
+    requests_this_month: int = 0
+    tokens_used: int = 0
+    last_request: Optional[str] = None
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+class CreditTransaction(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str = "demo_user"
+    amount: int
+    type: str  # debit, credit, bonus
+    description: str
+    model_used: Optional[str] = None
+    tier: str
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+class DashboardMetrics(BaseModel):
+    usage: UsageStats
+    recent_transactions: List[CreditTransaction]
+    model_breakdown: Dict[str, Dict[str, Any]]
+    tier_limits: Dict[str, Any]
+    cost_savings: float
+    efficiency_score: float
+
 # =============================================================================
 # DEFAULT PERSONAS
 # =============================================================================
