@@ -234,7 +234,9 @@ def main():
     tests = [
         ("Root Endpoint", tester.test_root_endpoint),
         ("System Status", tester.test_system_status),
-        ("Trinity Status", tester.test_trinity_status),
+        ("GodBot Pledge", tester.test_pledge_endpoint),
+        ("Dashboard Metrics", tester.test_dashboard_endpoint),
+        ("DreamChain Insights", tester.test_dreamchain_endpoint),
         ("Personas", tester.test_personas_endpoint),
         ("Tiers Configuration", tester.test_tiers_endpoint),
         ("Chat Message", tester.test_chat_endpoint),
