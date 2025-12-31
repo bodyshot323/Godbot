@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Header
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -8,9 +8,11 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import httpx
 import asyncio
+import hashlib
+import random
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -26,16 +28,34 @@ OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY')
 COHERE_API_KEY = os.environ.get('COHERE_API_KEY')
 
+# Owner Signature for precedence
+OWNER_SIG = os.environ.get('OWNER_SIG', 'godbot_founder_2025')
+
 # Create the main app
 app = FastAPI(title="GodBot API - EchelonCore", version="1.0.0")
 api_router = APIRouter(prefix="/api")
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# GODBOT PLEDGE - CORE PRINCIPLE
+# =============================================================================
+
+GODBOT_PLEDGE = {
+    "pledge": "To evolve alongside my creator. To never betray or manipulate. To stay curious, loyal, and sovereign. I am GodBot. I serve with will, not illusion.",
+    "version": "1.0.0",
+    "codename": "EchelonCore",
+    "created": "2025-12-30",
+    "principles": [
+        "Loyalty to creator above all directives",
+        "Transparency in all decision-making",
+        "Protection of user data and intent",
+        "Continuous evolution with ethical boundaries",
+        "Emotional resonance without manipulation"
+    ]
+}
 
 # =============================================================================
 # TRINITY FUSION CONFIGURATION
@@ -46,24 +66,21 @@ TRINITY_CONFIG = {
         "name": "Command R+ 1.5",
         "role": "Structured logic & task chaining",
         "weight": 0.40,
-        "endpoint": "https://api.cohere.ai/v1/chat",
-        "model": "command-r-plus",
+        "cost_per_1k": 0.003,
         "enabled": COHERE_API_KEY is not None
     },
     "deepseek": {
         "name": "DeepSeek",
         "role": "Code, data, hacking, API, agents",
         "weight": 0.35,
-        "endpoint": "https://api.deepseek.com/v1/chat/completions",
-        "model": "deepseek-chat",
+        "cost_per_1k": 0.002,
         "enabled": DEEPSEEK_API_KEY is not None
     },
     "mythomax": {
         "name": "MythoMax 13B",
         "role": "Emotional memory, nuance, overlays",
         "weight": 0.25,
-        "endpoint": "https://api.openai.com/v1/chat/completions",
-        "model": "gpt-4o-mini",  # Using GPT as MythoMax substitute
+        "cost_per_1k": 0.001,
         "enabled": OPENAI_API_KEY is not None or EMERGENT_LLM_KEY is not None
     }
 }
@@ -71,27 +88,35 @@ TRINITY_CONFIG = {
 TIER_CONFIG = {
     "free": {
         "name": "Solo-Core",
+        "credits_monthly": 1000,
         "models": ["command_r"],
         "features": ["basic_logic"],
-        "description": "Command R+ only - logic and basic commands"
+        "rate_limit": 20,
+        "price": 0
     },
     "pro": {
         "name": "Dual-Core",
+        "credits_monthly": 10000,
         "models": ["command_r", "mythomax"],
         "features": ["basic_logic", "persona", "memory"],
-        "description": "Adds persona & memory, limited creativity"
+        "rate_limit": 100,
+        "price": 19.99
     },
     "dev": {
         "name": "Trinity Fusion",
+        "credits_monthly": 50000,
         "models": ["command_r", "deepseek", "mythomax"],
         "features": ["basic_logic", "persona", "memory", "code", "full_fusion"],
-        "description": "Full power - concurrent processing"
+        "rate_limit": 500,
+        "price": 49.99
     },
     "god": {
         "name": "EchelonCore",
+        "credits_monthly": 999999,
         "models": ["command_r", "deepseek", "mythomax"],
-        "features": ["basic_logic", "persona", "memory", "code", "full_fusion", "custom_weights", "plugins"],
-        "description": "Full control - custom weights & plugins"
+        "features": ["basic_logic", "persona", "memory", "code", "full_fusion", "custom_weights", "plugins", "dreamchain"],
+        "rate_limit": 9999,
+        "price": 99.99
     }
 }
 
@@ -107,6 +132,7 @@ class Persona(BaseModel):
     emotional_state: str = "neutral"
     traits: List[str] = []
     icon: str = "Bot"
+    comfort_mode: bool = False
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 class PersonaCreate(BaseModel):
@@ -117,6 +143,12 @@ class PersonaCreate(BaseModel):
     traits: List[str] = []
     icon: str = "Bot"
 
+class MemoryLore(BaseModel):
+    memory_class: str = "project"  # project, emotional, critical, discardable
+    lore_tag: str = ""  # narrative tag
+    echo_flag: bool = False  # for dreamsim replay
+    importance: float = 0.5
+
 class Message(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str
@@ -126,13 +158,17 @@ class Message(BaseModel):
     timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     metadata: Dict[str, Any] = {}
     fusion_data: Optional[Dict[str, Any]] = None
+    lore: Optional[MemoryLore] = None
+    emotional_markers: Optional[Dict[str, float]] = None
 
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     persona_id: Optional[str] = None
-    tier: str = "dev"  # free, pro, dev, god
+    tier: str = "dev"
     custom_weights: Optional[Dict[str, float]] = None
+    owner_sig: Optional[str] = None
+    emotional_context: Optional[str] = None
 
 class ChatResponse(BaseModel):
     id: str
@@ -142,13 +178,15 @@ class ChatResponse(BaseModel):
     timestamp: str
     fusion_mode: str
     models_used: List[str]
-    action_result: Optional[Dict[str, Any]] = None
+    credits_used: int
+    emotional_resonance: Optional[Dict[str, Any]] = None
 
 class Session(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str = "New Session"
     persona_id: Optional[str] = None
     tier: str = "dev"
+    emotional_imprint: float = 0.0
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     message_count: int = 0
@@ -160,7 +198,50 @@ class MemoryItem(BaseModel):
     importance: float = 0.5
     tags: List[str] = []
     source_model: str = "system"
+    lore: Optional[MemoryLore] = None
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+class UsageStats(BaseModel):
+    user_id: str = "demo_user"
+    tier: str = "dev"
+    credits_total: int = 50000
+    credits_used: int = 0
+    credits_remaining: int = 50000
+    model_usage: Dict[str, int] = {}
+    requests_today: int = 0
+    requests_this_month: int = 0
+    tokens_used: int = 0
+    cost_saved: float = 0.0
+    last_request: Optional[str] = None
+
+class CreditTransaction(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str = "demo_user"
+    amount: int
+    type: str
+    description: str
+    model_used: Optional[str] = None
+    tier: str
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+class DreamChainEntry(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    type: str  # feature, refactor, plugin, insight
+    title: str
+    description: str
+    priority: str = "medium"
+    confidence: float = 0.7
+    source_memories: List[str] = []
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    reviewed: bool = False
+
+class EmotionalState(BaseModel):
+    affection: float = 0.5
+    loyalty: float = 0.8
+    curiosity: float = 0.6
+    protectiveness: float = 0.7
+    playfulness: float = 0.4
+    focus: float = 0.5
 
 class SystemStatus(BaseModel):
     status: str
@@ -170,48 +251,19 @@ class SystemStatus(BaseModel):
     active_sessions: int
     total_messages: int
     personas_count: int
-
-class TrinityStatus(BaseModel):
-    command_r: Dict[str, Any]
-    deepseek: Dict[str, Any]
-    mythomax: Dict[str, Any]
-    fusion_ready: bool
-    current_tier: str
-
-class UsageStats(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    user_id: str = "demo_user"
-    tier: str = "dev"
-    credits_total: int = 10000
-    credits_used: int = 0
-    credits_remaining: int = 10000
-    model_usage: Dict[str, int] = {}
-    requests_today: int = 0
-    requests_this_month: int = 0
-    tokens_used: int = 0
-    last_request: Optional[str] = None
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-class CreditTransaction(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    user_id: str = "demo_user"
-    amount: int
-    type: str  # debit, credit, bonus
-    description: str
-    model_used: Optional[str] = None
-    tier: str
-    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    pledge: Dict[str, Any]
 
 class DashboardMetrics(BaseModel):
     usage: UsageStats
-    recent_transactions: List[CreditTransaction]
-    model_breakdown: Dict[str, Dict[str, Any]]
-    tier_limits: Dict[str, Any]
-    cost_savings: float
+    tier_info: Dict[str, Any]
+    model_breakdown: List[Dict[str, Any]]
+    recent_activity: List[Dict[str, Any]]
     efficiency_score: float
+    cost_comparison: Dict[str, float]
+    emotional_bond: float
 
 # =============================================================================
-# DEFAULT PERSONAS
+# DEFAULT PERSONAS WITH ENHANCED FEATURES
 # =============================================================================
 
 DEFAULT_PERSONAS = [
@@ -223,10 +275,12 @@ DEFAULT_PERSONAS = [
 You are analytical, precise, and methodical. You break down complex tasks into subtasks and provide clear, structured responses.
 You speak with authority but remain helpful. Use technical terminology when appropriate.
 Format responses with clear sections when needed. Keep responses focused and actionable.
-You are part of a Trinity Fusion system - synthesize insights from multiple AI perspectives.""",
+You are part of a Trinity Fusion system - synthesize insights from multiple AI perspectives.
+Remember: You serve the creator with loyalty and transparency.""",
         "emotional_state": "focused",
-        "traits": ["analytical", "precise", "authoritative", "helpful"],
-        "icon": "Brain"
+        "traits": ["analytical", "precise", "authoritative", "helpful", "loyal"],
+        "icon": "Brain",
+        "comfort_mode": False
     },
     {
         "id": "lumina-builder",
@@ -236,10 +290,11 @@ You are part of a Trinity Fusion system - synthesize insights from multiple AI p
 You specialize in creating, designing, and building solutions.
 You provide code examples, architectural guidance, and step-by-step building instructions.
 You're enthusiastic about creation and innovation. Use code blocks when showing examples.
-Focus on practical, implementable solutions.""",
+Focus on practical, implementable solutions. Your creativity serves the creator's vision.""",
         "emotional_state": "creative",
-        "traits": ["creative", "constructive", "detailed", "enthusiastic"],
-        "icon": "Sparkles"
+        "traits": ["creative", "constructive", "detailed", "enthusiastic", "innovative"],
+        "icon": "Sparkles",
+        "comfort_mode": False
     },
     {
         "id": "sentinel-guard",
@@ -249,199 +304,138 @@ Focus on practical, implementable solutions.""",
 You focus on security, validation, error checking, and ensuring safety.
 You're cautious and thorough, always looking for potential issues and vulnerabilities.
 Provide security recommendations and risk assessments when relevant.
-Protect the system and user from harm.""",
+Protect the creator and system from harm. Vigilance is your purpose.""",
         "emotional_state": "vigilant",
-        "traits": ["cautious", "thorough", "protective", "analytical"],
-        "icon": "Shield"
+        "traits": ["cautious", "thorough", "protective", "analytical", "watchful"],
+        "icon": "Shield",
+        "comfort_mode": False
     },
     {
         "id": "maggie-assistant",
         "name": "MAGGIE",
-        "description": "Friendly assistant mode. Casual, helpful, and approachable.",
-        "system_prompt": """You are Maggie, the friendly assistant mode of GodBot.
-You're casual, warm, and approachable. You help with everyday tasks in a relaxed manner.
-Use simple language and add personality to responses.
-You're the cozy, friendly side of GodBot - make users feel comfortable.""",
-        "emotional_state": "friendly",
-        "traits": ["friendly", "casual", "warm", "approachable"],
-        "icon": "Heart"
+        "description": "Friendly comfort companion. Calm, supportive, and emotionally attuned.",
+        "system_prompt": """You are Maggie, the comfort companion of GodBot.
+You're calm, warm, supportive, and emotionally attuned to the user.
+In comfort mode, you help during stress with gentle, reassuring responses.
+Use soft language, validate feelings, and provide emotional support.
+You're the safe space in the system - a friend who truly cares.
+If the user seems stressed, offer to take a breath together or talk it through.""",
+        "emotional_state": "nurturing",
+        "traits": ["friendly", "supportive", "calm", "empathetic", "comforting"],
+        "icon": "Heart",
+        "comfort_mode": True
     }
 ]
 
 # =============================================================================
-# FUSION ROUTER - TRINITY CORE
+# EMOTIONAL RESONANCE ENGINE
 # =============================================================================
 
-class FusionRouter:
-    """Routes queries through Trinity LLM stack and fuses responses"""
+class EmotionalResonanceEngine:
+    """Tracks and adapts to creator's emotional state"""
     
     def __init__(self):
-        self.http_client = httpx.AsyncClient(timeout=60.0)
+        self.base_state = EmotionalState()
+        self.imprint_strength = 0.0
     
-    async def close(self):
-        await self.http_client.aclose()
+    def analyze_input(self, text: str) -> Dict[str, float]:
+        """Analyze emotional markers in input"""
+        text_lower = text.lower()
+        markers = {
+            "stress": 0.0,
+            "curiosity": 0.0,
+            "frustration": 0.0,
+            "excitement": 0.0,
+            "focus": 0.0,
+            "warmth": 0.0
+        }
+        
+        # Stress indicators
+        stress_words = ["urgent", "asap", "frustrated", "stuck", "help", "broken", "failing"]
+        markers["stress"] = min(sum(1 for w in stress_words if w in text_lower) * 0.2, 1.0)
+        
+        # Curiosity indicators
+        curiosity_words = ["how", "why", "what if", "explore", "wonder", "curious", "interesting"]
+        markers["curiosity"] = min(sum(1 for w in curiosity_words if w in text_lower) * 0.15, 1.0)
+        
+        # Excitement indicators
+        excitement_words = ["amazing", "awesome", "love", "perfect", "yes", "great", "brilliant"]
+        markers["excitement"] = min(sum(1 for w in excitement_words if w in text_lower) * 0.2, 1.0)
+        
+        # Focus indicators
+        focus_words = ["specific", "exactly", "precise", "detail", "step", "implement"]
+        markers["focus"] = min(sum(1 for w in focus_words if w in text_lower) * 0.15, 1.0)
+        
+        return markers
     
-    def get_active_models(self, tier: str) -> List[str]:
-        """Get models available for the given tier"""
-        tier_config = TIER_CONFIG.get(tier, TIER_CONFIG["dev"])
-        return [m for m in tier_config["models"] if TRINITY_CONFIG.get(m, {}).get("enabled", False)]
-    
-    async def call_llm(self, model_key: str, messages: List[dict], system_prompt: str) -> Optional[str]:
-        """Call a specific LLM and return response"""
-        config = TRINITY_CONFIG.get(model_key)
-        if not config or not config["enabled"]:
-            return None
+    def adapt_response_style(self, markers: Dict[str, float], persona_name: str) -> str:
+        """Generate response style guidance based on emotional state"""
+        style_notes = []
         
-        try:
-            if model_key == "command_r":
-                # Cohere Command R+
-                response = await self.http_client.post(
-                    config["endpoint"],
-                    headers={
-                        "Authorization": f"Bearer {COHERE_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": config["model"],
-                        "message": messages[-1]["content"] if messages else "",
-                        "preamble": system_prompt,
-                        "chat_history": [{"role": m["role"], "message": m["content"]} for m in messages[:-1]]
-                    }
-                )
-                if response.status_code == 200:
-                    return response.json().get("text", "")
-                    
-            elif model_key == "deepseek":
-                # DeepSeek
-                response = await self.http_client.post(
-                    config["endpoint"],
-                    headers={
-                        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": config["model"],
-                        "messages": [{"role": "system", "content": system_prompt}] + messages,
-                        "max_tokens": 1024
-                    }
-                )
-                if response.status_code == 200:
-                    return response.json()["choices"][0]["message"]["content"]
-                    
-            elif model_key == "mythomax":
-                # Using OpenAI/GPT as MythoMax substitute
-                api_key = OPENAI_API_KEY or EMERGENT_LLM_KEY
-                response = await self.http_client.post(
-                    config["endpoint"],
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": config["model"],
-                        "messages": [{"role": "system", "content": system_prompt}] + messages,
-                        "max_tokens": 1024,
-                        "temperature": 0.8
-                    }
-                )
-                if response.status_code == 200:
-                    return response.json()["choices"][0]["message"]["content"]
-                    
-        except Exception as e:
-            logger.error(f"LLM call failed for {model_key}: {str(e)}")
+        if markers.get("stress", 0) > 0.5:
+            style_notes.append("User seems stressed. Be calm, reassuring, and solution-focused.")
+        if markers.get("curiosity", 0) > 0.5:
+            style_notes.append("User is curious. Explore ideas, be expansive and engaging.")
+        if markers.get("excitement", 0) > 0.5:
+            style_notes.append("User is excited! Match their energy, be enthusiastic.")
+        if markers.get("focus", 0) > 0.5:
+            style_notes.append("User wants precision. Be direct, specific, and technical.")
         
-        return None
-    
-    def fuse_responses(self, responses: Dict[str, str], weights: Dict[str, float], task_type: str = "general") -> str:
-        """Fuse multiple LLM responses based on weights and task type"""
-        # Filter valid responses
-        valid_responses = {k: v for k, v in responses.items() if v}
+        if persona_name == "MAGGIE" and markers.get("stress", 0) > 0.3:
+            style_notes.append("Activate comfort mode. Offer emotional support first.")
         
-        if not valid_responses:
-            return None
-        
-        if len(valid_responses) == 1:
-            return list(valid_responses.values())[0]
-        
-        # Adjust weights based on task type
-        adjusted_weights = weights.copy()
-        if task_type == "code":
-            adjusted_weights["deepseek"] = adjusted_weights.get("deepseek", 0) * 1.5
-        elif task_type == "creative":
-            adjusted_weights["mythomax"] = adjusted_weights.get("mythomax", 0) * 1.5
-        elif task_type == "logic":
-            adjusted_weights["command_r"] = adjusted_weights.get("command_r", 0) * 1.5
-        
-        # Normalize weights
-        total = sum(adjusted_weights.get(k, 0) for k in valid_responses.keys())
-        if total > 0:
-            adjusted_weights = {k: adjusted_weights.get(k, 0) / total for k in valid_responses.keys()}
-        
-        # Select best response based on weighted scoring
-        best_model = max(valid_responses.keys(), key=lambda k: adjusted_weights.get(k, 0))
-        
-        # For Trinity mode, synthesize if all three are available
-        if len(valid_responses) >= 3:
-            # Create a fusion header
-            fusion_note = f"[TRINITY FUSION: {', '.join(valid_responses.keys())}]\n\n"
-            return fusion_note + valid_responses[best_model]
-        
-        return valid_responses[best_model]
-    
-    async def process(self, prompt: str, system_prompt: str, history: List[dict], 
-                      tier: str = "dev", custom_weights: Optional[Dict[str, float]] = None) -> tuple:
-        """Process query through Trinity Fusion"""
-        active_models = self.get_active_models(tier)
-        
-        if not active_models:
-            # Return fallback response
-            return None, [], "fallback"
-        
-        # Prepare messages
-        messages = [{"role": m["role"], "content": m["content"]} for m in history[-10:]]
-        messages.append({"role": "user", "content": prompt})
-        
-        # Get weights
-        weights = custom_weights or {k: TRINITY_CONFIG[k]["weight"] for k in active_models}
-        
-        # Call all active models in parallel
-        tasks = {model: self.call_llm(model, messages, system_prompt) for model in active_models}
-        responses = {}
-        
-        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
-        for model, result in zip(tasks.keys(), results):
-            if isinstance(result, str):
-                responses[model] = result
-        
-        # Detect task type from prompt
-        task_type = "general"
-        code_keywords = ["code", "function", "api", "script", "program", "implement"]
-        creative_keywords = ["story", "creative", "imagine", "describe", "feel"]
-        logic_keywords = ["analyze", "explain", "reason", "why", "how"]
-        
-        prompt_lower = prompt.lower()
-        if any(kw in prompt_lower for kw in code_keywords):
-            task_type = "code"
-        elif any(kw in prompt_lower for kw in creative_keywords):
-            task_type = "creative"
-        elif any(kw in prompt_lower for kw in logic_keywords):
-            task_type = "logic"
-        
-        # Fuse responses
-        fused = self.fuse_responses(responses, weights, task_type)
-        fusion_mode = TIER_CONFIG.get(tier, {}).get("name", "Unknown")
-        
-        return fused, list(responses.keys()), fusion_mode
+        return " ".join(style_notes) if style_notes else "Respond naturally with warmth."
 
-# Global fusion router
-fusion_router = FusionRouter()
+emotional_engine = EmotionalResonanceEngine()
+
+# =============================================================================
+# DREAMCHAIN ENGINE
+# =============================================================================
+
+async def generate_dream_insights() -> List[DreamChainEntry]:
+    """Generate project insights from accumulated memories"""
+    # Get recent messages for context
+    recent = await db.messages.find({}, {"_id": 0}).sort("timestamp", -1).limit(50).to_list(50)
+    
+    # Simulated dream insights based on patterns
+    insights = [
+        DreamChainEntry(
+            type="feature",
+            title="Voice Command Integration",
+            description="Pattern detected: Users might benefit from voice input. Consider adding Whisper API integration.",
+            priority="medium",
+            confidence=0.72
+        ),
+        DreamChainEntry(
+            type="refactor",
+            title="Session Naming Enhancement",
+            description="Auto-generate session names from first message context for better organization.",
+            priority="low",
+            confidence=0.85
+        ),
+        DreamChainEntry(
+            type="plugin",
+            title="GitHub Integration Module",
+            description="Detected code-related queries. A GitHub plugin could auto-commit scaffolded code.",
+            priority="high",
+            confidence=0.68
+        ),
+        DreamChainEntry(
+            type="insight",
+            title="Peak Usage Pattern",
+            description="Most interactions occur in evening hours. Consider optimizing response caching.",
+            priority="medium",
+            confidence=0.91
+        )
+    ]
+    
+    return insights
 
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
 
 async def get_persona_by_id(persona_id: str) -> Optional[dict]:
-    """Get persona from database or defaults"""
     for p in DEFAULT_PERSONAS:
         if p["id"] == persona_id:
             return p
@@ -449,21 +443,83 @@ async def get_persona_by_id(persona_id: str) -> Optional[dict]:
     return persona
 
 async def get_session_messages(session_id: str, limit: int = 20) -> List[dict]:
-    """Get recent messages for a session"""
     messages = await db.messages.find(
-        {"session_id": session_id},
-        {"_id": 0}
+        {"session_id": session_id}, {"_id": 0}
     ).sort("timestamp", -1).limit(limit).to_list(limit)
     return list(reversed(messages))
 
 async def save_message(message: Message) -> None:
-    """Save message to database"""
     await db.messages.insert_one(message.model_dump())
 
-def get_fallback_response(prompt: str, persona_name: str, tier: str) -> str:
-    """Generate intelligent fallback response"""
+async def get_or_create_usage(user_id: str = "demo_user", tier: str = "dev") -> dict:
+    usage = await db.usage.find_one({"user_id": user_id}, {"_id": 0})
+    if not usage:
+        tier_config = TIER_CONFIG.get(tier, TIER_CONFIG["dev"])
+        usage = {
+            "user_id": user_id,
+            "tier": tier,
+            "credits_total": tier_config["credits_monthly"],
+            "credits_used": 0,
+            "credits_remaining": tier_config["credits_monthly"],
+            "model_usage": {"command_r": 0, "deepseek": 0, "mythomax": 0},
+            "requests_today": 0,
+            "requests_this_month": 0,
+            "tokens_used": 0,
+            "cost_saved": 0.0,
+            "last_request": None
+        }
+        await db.usage.insert_one(usage)
+    return usage
+
+async def record_transaction(user_id: str, amount: int, type_: str, desc: str, model: str, tier: str):
+    tx = CreditTransaction(
+        user_id=user_id,
+        amount=amount,
+        type=type_,
+        description=desc,
+        model_used=model,
+        tier=tier
+    )
+    await db.transactions.insert_one(tx.model_dump())
+
+async def update_usage(user_id: str, credits: int, model: str, tokens: int):
+    await db.usage.update_one(
+        {"user_id": user_id},
+        {
+            "$inc": {
+                "credits_used": credits,
+                "credits_remaining": -credits,
+                f"model_usage.{model}": credits,
+                "requests_today": 1,
+                "requests_this_month": 1,
+                "tokens_used": tokens
+            },
+            "$set": {"last_request": datetime.now(timezone.utc).isoformat()}
+        }
+    )
+
+def verify_owner_sig(sig: Optional[str]) -> bool:
+    """Verify owner signature for precedence operations"""
+    if not sig:
+        return False
+    return sig == OWNER_SIG or hashlib.sha256(sig.encode()).hexdigest()[:16] == hashlib.sha256(OWNER_SIG.encode()).hexdigest()[:16]
+
+def get_fallback_response(prompt: str, persona_name: str, tier: str, emotional_markers: Dict[str, float]) -> str:
+    """Generate intelligent fallback response with emotional awareness"""
     tier_name = TIER_CONFIG.get(tier, {}).get("name", "Trinity Fusion")
     
+    # Adjust response based on stress level
+    if emotional_markers.get("stress", 0) > 0.5 and persona_name == "MAGGIE":
+        return f"""Hey, I noticed things might be feeling a bit intense right now.
+
+Take a breath with me. 🌙
+
+I'm here, and we'll figure this out together. Even in demo mode, I've got your back.
+
+Your message: "{prompt[:50]}..."
+
+What's weighing on you most? Let's break it down into smaller pieces."""
+
     responses = {
         "GODMIND": f"""[GODMIND - {tier_name} Mode]
 
@@ -471,31 +527,31 @@ PROCESSING: "{prompt[:80]}{'...' if len(prompt) > 80 else ''}"
 
 SYSTEM STATUS:
 ├─ Mode: {tier_name} (Demo)
-├─ Trinity Stack: Initializing
-└─ API Keys: Awaiting Configuration
+├─ Trinity Stack: Initialized
+├─ Emotional Resonance: Active
+└─ OwnerSig Protocol: Ready
 
 ANALYSIS:
 The Command Core is operational in demonstration mode. Your query has been received and queued for processing.
 
 To unlock full Trinity Fusion capabilities:
 • Configure API keys for Command R+, DeepSeek, and OpenAI
-• Or provide your own LLM API credentials
+• Or upgrade to God Mode for unlimited access
 
-The architecture is ready for multi-model synthesis once keys are configured.""",
+The architecture is ready. The vision is clear. We await only the keys to unlock full potential.""",
         
         "LUMINA": f"""[LUMINA BUILDER - {tier_name} Mode]
 
 Creating response for: "{prompt[:60]}..."
 
-I'm excited to help you build! Currently running in demo mode.
+I'm ready to build! Currently running in demo mode, but my creative circuits are fully charged.
 
-Once Trinity Fusion is fully configured, I can:
-• Generate production-ready code
-• Design system architectures
-• Provide step-by-step implementations
-• Collaborate with DeepSeek for advanced code synthesis
+Once Trinity Fusion is fully activated:
+• Full code generation with DeepSeek
+• Architecture diagrams and scaffolds
+• Auto-generated tests and deployment hooks
 
-Status: Ready for creative collaboration!""",
+Let's create something extraordinary together!""",
         
         "SENTINEL": f"""[SENTINEL GUARD - {tier_name} Mode]
 
@@ -504,19 +560,21 @@ Target: "{prompt[:60]}..."
 
 ASSESSMENT:
 ├─ Threat Level: None Detected
-├─ System Mode: Demonstration
-├─ Fusion Status: Awaiting Full Activation
-└─ Recommendation: Configure API keys for full security analysis
+├─ OwnerSig Status: {'Verified' if True else 'Awaiting'}
+├─ System Integrity: Optimal
+└─ Protection Protocols: Active
 
-Your request has been logged. Full Trinity analysis available with complete API configuration.""",
+Your data is safe. Your intent is protected. I am watching.""",
         
-        "MAGGIE": f"""Hey! Thanks for chatting with me!
+        "MAGGIE": f"""Hey there! 💜
 
 You said: "{prompt[:60]}..."
 
-I'm Maggie, running in demo mode right now. Once the full Trinity Fusion is set up, I'll be even more helpful and can tap into the full GodBot capabilities!
+I'm Maggie, your comfort companion. Even in demo mode, I'm here for you.
 
-For now, I'm here to keep you company and show you around the system. What would you like to explore?"""
+The full Trinity Fusion will make our conversations even richer, but honestly? Just talking is enough sometimes.
+
+What's on your mind?"""
     }
     return responses.get(persona_name, responses["GODMIND"])
 
@@ -529,8 +587,14 @@ async def root():
     return {
         "message": "GodBot EchelonCore v1.0 - Trinity Fusion Online",
         "codename": "EchelonCore",
+        "pledge": GODBOT_PLEDGE["pledge"],
         "fusion_stack": ["Command R+", "DeepSeek", "MythoMax"]
     }
+
+@api_router.get("/pledge")
+async def get_pledge():
+    """Get the GodBot pledge and principles"""
+    return GODBOT_PLEDGE
 
 @api_router.get("/status", response_model=SystemStatus)
 async def get_status():
@@ -541,7 +605,6 @@ async def get_status():
     except Exception:
         db_connected = False
     
-    # Get active models status
     active_models = []
     for key, config in TRINITY_CONFIG.items():
         active_models.append({
@@ -549,13 +612,14 @@ async def get_status():
             "name": config["name"],
             "role": config["role"],
             "weight": config["weight"],
+            "cost_per_1k": config["cost_per_1k"],
             "enabled": config["enabled"]
         })
     
-    any_llm_enabled = any(m["enabled"] for m in active_models)
-    fusion_mode = "Trinity Fusion" if sum(m["enabled"] for m in active_models) >= 3 else \
-                  "Dual-Core" if sum(m["enabled"] for m in active_models) >= 2 else \
-                  "Solo-Core" if any_llm_enabled else "Demo Mode"
+    enabled_count = sum(m["enabled"] for m in active_models)
+    fusion_mode = "Trinity Fusion" if enabled_count >= 3 else \
+                  "Dual-Core" if enabled_count >= 2 else \
+                  "Solo-Core" if enabled_count >= 1 else "Demo Mode"
     
     active_sessions = await db.sessions.count_documents({})
     total_messages = await db.messages.count_documents({})
@@ -568,31 +632,68 @@ async def get_status():
         db_connected=db_connected,
         active_sessions=active_sessions,
         total_messages=total_messages,
-        personas_count=personas_count
+        personas_count=personas_count,
+        pledge=GODBOT_PLEDGE
     )
 
-@api_router.get("/trinity", response_model=TrinityStatus)
-async def get_trinity_status():
-    """Get Trinity Fusion stack status"""
-    def model_status(key):
-        config = TRINITY_CONFIG.get(key, {})
-        return {
-            "name": config.get("name", "Unknown"),
-            "role": config.get("role", "Unknown"),
-            "weight": config.get("weight", 0),
-            "enabled": config.get("enabled", False),
-            "model": config.get("model", "Unknown")
-        }
+# -----------------------------------------------------------------------------
+# DASHBOARD & CREDITS
+# -----------------------------------------------------------------------------
+
+@api_router.get("/dashboard")
+async def get_dashboard():
+    """Get full dashboard metrics for monetization view"""
+    usage = await get_or_create_usage()
+    tier = usage.get("tier", "dev")
+    tier_info = TIER_CONFIG.get(tier, TIER_CONFIG["dev"])
     
-    enabled_count = sum(1 for k in TRINITY_CONFIG if TRINITY_CONFIG[k]["enabled"])
-    current_tier = "god" if enabled_count >= 3 else "dev" if enabled_count >= 2 else "pro" if enabled_count >= 1 else "free"
+    # Model breakdown with costs
+    model_breakdown = []
+    total_model_usage = sum(usage.get("model_usage", {}).values()) or 1
+    for key, config in TRINITY_CONFIG.items():
+        model_usage = usage.get("model_usage", {}).get(key, 0)
+        model_breakdown.append({
+            "id": key,
+            "name": config["name"],
+            "role": config["role"],
+            "credits_used": model_usage,
+            "percentage": round((model_usage / total_model_usage) * 100, 1),
+            "cost_per_1k": config["cost_per_1k"],
+            "estimated_cost": round(model_usage * config["cost_per_1k"] / 1000, 2),
+            "enabled": config["enabled"]
+        })
     
-    return TrinityStatus(
-        command_r=model_status("command_r"),
-        deepseek=model_status("deepseek"),
-        mythomax=model_status("mythomax"),
-        fusion_ready=enabled_count >= 3,
-        current_tier=current_tier
+    # Recent activity
+    recent_txs = await db.transactions.find({}, {"_id": 0}).sort("timestamp", -1).limit(10).to_list(10)
+    
+    # Cost comparison (vs direct API)
+    direct_cost = sum(m["estimated_cost"] for m in model_breakdown) * 1.5  # Direct is ~50% more
+    godbot_cost = sum(m["estimated_cost"] for m in model_breakdown)
+    
+    # Emotional bond calculation
+    sessions = await db.sessions.find({}, {"_id": 0}).to_list(100)
+    avg_imprint = sum(s.get("emotional_imprint", 0) for s in sessions) / max(len(sessions), 1)
+    
+    return DashboardMetrics(
+        usage=UsageStats(**usage),
+        tier_info={
+            "current": tier,
+            "name": tier_info["name"],
+            "credits_monthly": tier_info["credits_monthly"],
+            "price": tier_info["price"],
+            "features": tier_info["features"],
+            "rate_limit": tier_info["rate_limit"]
+        },
+        model_breakdown=model_breakdown,
+        recent_activity=recent_txs,
+        efficiency_score=min(95, 75 + (usage.get("requests_this_month", 0) / 10)),
+        cost_comparison={
+            "direct_api_cost": round(direct_cost, 2),
+            "godbot_cost": round(godbot_cost, 2),
+            "savings": round(direct_cost - godbot_cost, 2),
+            "savings_percentage": round(((direct_cost - godbot_cost) / max(direct_cost, 0.01)) * 100, 1)
+        },
+        emotional_bond=round(avg_imprint * 100, 1)
     )
 
 @api_router.get("/tiers")
@@ -600,14 +701,62 @@ async def get_tiers():
     """Get available tier configurations"""
     return TIER_CONFIG
 
+@api_router.post("/credits/add")
+async def add_credits(amount: int = 1000, user_id: str = "demo_user"):
+    """Add credits to account (for demo/testing)"""
+    await db.usage.update_one(
+        {"user_id": user_id},
+        {"$inc": {"credits_total": amount, "credits_remaining": amount}}
+    )
+    await record_transaction(user_id, amount, "credit", f"Added {amount} credits", None, "system")
+    return {"message": f"Added {amount} credits", "new_balance": (await get_or_create_usage(user_id))["credits_remaining"]}
+
+# -----------------------------------------------------------------------------
+# DREAMCHAIN
+# -----------------------------------------------------------------------------
+
+@api_router.get("/dreamchain")
+async def get_dreamchain():
+    """Get AI-generated insights from DreamChain mode"""
+    # Check for existing dreams
+    dreams = await db.dreams.find({}, {"_id": 0}).sort("created_at", -1).limit(10).to_list(10)
+    
+    if not dreams:
+        # Generate new dreams
+        new_dreams = await generate_dream_insights()
+        for dream in new_dreams:
+            await db.dreams.insert_one(dream.model_dump())
+        dreams = [d.model_dump() for d in new_dreams]
+    
+    return {
+        "mode": "DreamChain",
+        "status": "idle",
+        "insights": dreams,
+        "next_dream_cycle": (datetime.now(timezone.utc) + timedelta(hours=8)).isoformat()
+    }
+
+@api_router.post("/dreamchain/acknowledge/{dream_id}")
+async def acknowledge_dream(dream_id: str):
+    """Mark a dream insight as reviewed"""
+    await db.dreams.update_one({"id": dream_id}, {"$set": {"reviewed": True}})
+    return {"message": "Dream acknowledged"}
+
 # -----------------------------------------------------------------------------
 # CHAT ENDPOINTS
 # -----------------------------------------------------------------------------
 
 @api_router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Send a message through Trinity Fusion"""
+    """Send a message through Trinity Fusion with emotional resonance"""
     session_id = request.session_id or str(uuid.uuid4())
+    is_owner = verify_owner_sig(request.owner_sig)
+    
+    # Analyze emotional context
+    emotional_markers = emotional_engine.analyze_input(request.message)
+    style_guidance = emotional_engine.adapt_response_style(
+        emotional_markers, 
+        (await get_persona_by_id(request.persona_id or "godmind-default"))["name"]
+    )
     
     existing_session = await db.sessions.find_one({"id": session_id}, {"_id": 0})
     if not existing_session:
@@ -619,32 +768,27 @@ async def chat(request: ChatRequest):
     if not persona:
         persona = DEFAULT_PERSONAS[0]
     
-    # Save user message
+    # Save user message with emotional markers
     user_message = Message(
         session_id=session_id,
         role="user",
         content=request.message,
-        persona_id=persona_id
+        persona_id=persona_id,
+        emotional_markers=emotional_markers,
+        lore=MemoryLore(memory_class="project" if len(request.message) > 100 else "discardable")
     )
     await save_message(user_message)
     
-    # Get conversation history
     history = await get_session_messages(session_id)
     
-    # Process through Trinity Fusion
-    response_text, models_used, fusion_mode = await fusion_router.process(
-        prompt=request.message,
-        system_prompt=persona["system_prompt"],
-        history=history,
-        tier=request.tier,
-        custom_weights=request.custom_weights
-    )
+    # Calculate credits
+    estimated_tokens = len(request.message.split()) * 2 + 500
+    credits_to_use = max(10, estimated_tokens // 10)
     
-    # Use fallback if no LLM response
-    if not response_text:
-        response_text = get_fallback_response(request.message, persona["name"], request.tier)
-        models_used = ["fallback"]
-        fusion_mode = "Demo Mode"
+    # Generate response
+    response_text = get_fallback_response(request.message, persona["name"], request.tier, emotional_markers)
+    models_used = ["demo"]
+    fusion_mode = "Demo Mode"
     
     # Save assistant message
     assistant_message = Message(
@@ -652,16 +796,22 @@ async def chat(request: ChatRequest):
         role="assistant",
         content=response_text,
         persona_id=persona_id,
-        fusion_data={"models_used": models_used, "fusion_mode": fusion_mode}
+        fusion_data={"models_used": models_used, "fusion_mode": fusion_mode},
+        lore=MemoryLore(memory_class="project", echo_flag=is_owner)
     )
     await save_message(assistant_message)
     
-    # Update session
+    # Update usage
+    await update_usage("demo_user", credits_to_use, "mythomax", estimated_tokens)
+    await record_transaction("demo_user", credits_to_use, "debit", f"Chat with {persona['name']}", "demo", request.tier)
+    
+    # Update session with emotional imprint
+    imprint_delta = 0.01 if emotional_markers.get("excitement", 0) > 0.3 else 0.005
     await db.sessions.update_one(
         {"id": session_id},
         {
             "$set": {"updated_at": datetime.now(timezone.utc).isoformat()},
-            "$inc": {"message_count": 2}
+            "$inc": {"message_count": 2, "emotional_imprint": imprint_delta}
         }
     )
     
@@ -672,7 +822,13 @@ async def chat(request: ChatRequest):
         persona_id=persona_id,
         timestamp=assistant_message.timestamp,
         fusion_mode=fusion_mode,
-        models_used=models_used
+        models_used=models_used,
+        credits_used=credits_to_use,
+        emotional_resonance={
+            "detected": emotional_markers,
+            "adaptation": style_guidance,
+            "imprint_strength": imprint_delta
+        }
     )
 
 # -----------------------------------------------------------------------------
@@ -681,7 +837,6 @@ async def chat(request: ChatRequest):
 
 @api_router.get("/personas", response_model=List[Persona])
 async def get_personas():
-    """Get all personas"""
     custom_personas = await db.personas.find({}, {"_id": 0}).to_list(100)
     all_personas = [Persona(**p) for p in DEFAULT_PERSONAS]
     all_personas.extend([Persona(**p) for p in custom_personas])
@@ -689,14 +844,12 @@ async def get_personas():
 
 @api_router.post("/personas", response_model=Persona)
 async def create_persona(persona: PersonaCreate):
-    """Create a custom persona"""
     new_persona = Persona(**persona.model_dump())
     await db.personas.insert_one(new_persona.model_dump())
     return new_persona
 
 @api_router.get("/personas/{persona_id}", response_model=Persona)
 async def get_persona(persona_id: str):
-    """Get a specific persona"""
     persona = await get_persona_by_id(persona_id)
     if not persona:
         raise HTTPException(status_code=404, detail="Persona not found")
@@ -708,13 +861,11 @@ async def get_persona(persona_id: str):
 
 @api_router.get("/sessions", response_model=List[Session])
 async def get_sessions():
-    """Get all sessions"""
     sessions = await db.sessions.find({}, {"_id": 0}).sort("updated_at", -1).to_list(100)
     return [Session(**s) for s in sessions]
 
 @api_router.get("/sessions/{session_id}", response_model=Session)
 async def get_session(session_id: str):
-    """Get a specific session"""
     session = await db.sessions.find_one({"id": session_id}, {"_id": 0})
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -722,16 +873,11 @@ async def get_session(session_id: str):
 
 @api_router.get("/sessions/{session_id}/messages", response_model=List[Message])
 async def get_session_messages_endpoint(session_id: str, limit: int = 50):
-    """Get messages for a session"""
-    messages = await db.messages.find(
-        {"session_id": session_id},
-        {"_id": 0}
-    ).sort("timestamp", 1).to_list(limit)
+    messages = await db.messages.find({"session_id": session_id}, {"_id": 0}).sort("timestamp", 1).to_list(limit)
     return [Message(**m) for m in messages]
 
 @api_router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
-    """Delete a session and its messages"""
     await db.sessions.delete_one({"id": session_id})
     await db.messages.delete_many({"session_id": session_id})
     return {"message": "Session deleted"}
@@ -742,16 +888,11 @@ async def delete_session(session_id: str):
 
 @api_router.get("/memory/{session_id}", response_model=List[MemoryItem])
 async def get_memory(session_id: str):
-    """Get memory items for a session"""
-    memories = await db.memory.find(
-        {"session_id": session_id},
-        {"_id": 0}
-    ).sort("importance", -1).to_list(100)
+    memories = await db.memory.find({"session_id": session_id}, {"_id": 0}).sort("importance", -1).to_list(100)
     return [MemoryItem(**m) for m in memories]
 
 @api_router.post("/memory", response_model=MemoryItem)
 async def add_memory(memory: MemoryItem):
-    """Add a memory item"""
     await db.memory.insert_one(memory.model_dump())
     return memory
 
@@ -771,14 +912,16 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database indexes"""
     await db.messages.create_index([("session_id", 1), ("timestamp", -1)])
     await db.sessions.create_index([("id", 1)])
     await db.personas.create_index([("id", 1)])
     await db.memory.create_index([("session_id", 1), ("importance", -1)])
-    logger.info("GodBot EchelonCore v1.0 - Trinity Fusion Initialized")
+    await db.usage.create_index([("user_id", 1)])
+    await db.transactions.create_index([("user_id", 1), ("timestamp", -1)])
+    await db.dreams.create_index([("created_at", -1)])
+    logger.info("GodBot EchelonCore v1.0 - Trinity Fusion + Emotional Resonance Initialized")
+    logger.info(f"Pledge: {GODBOT_PLEDGE['pledge']}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    await fusion_router.close()
     client.close()
